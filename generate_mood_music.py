@@ -2,6 +2,7 @@ from pychord import Chord
 import random
 import pretty_midi
 import re
+import numpy as np
 
 bars_num = 16
 tempo = 120
@@ -56,20 +57,68 @@ def notes_name2notes(notes_name, octaves):
         notes += [n+str(octave) for n in notes_name]
     return notes
 
+def create_chord_progression(chord_notes, note_octave, Arousal, Arousal_range):
+    chord_progression = []
+
+    chord_duration_idx = round(linear_map(Arousal, Arousal_range[0], Arousal_range[1], 0, 2)) #较低的arousal对应较长duration
+    chord_duration = [1,2,4][chord_duration_idx] #指数关系，可能值为1,2,4
+
+    chord_indexes = [] # 每个四分音符上，所用和弦的序号
+    for bar in range(bars_num):
+        chord_idx = bar%len(chord_notes)
+        notes_name = chord_notes[chord_idx]
+
+        first_half = int(bar<bars_num/2) #和弦在后半段整体升八度
+        notes = notes_name2notes(notes_name, octaves=[note_octave[0]-first_half])
+
+        for _ in range(chord_duration):
+            chord_progression.append({ 'note': notes, 'duration': chord_duration, 'sustain': chord_duration})
+
+        chord_indexes += ([chord_idx]*4)
+
+    return chord_progression, chord_indexes
+
+def near_probability(candidates, last_x):
+    start_index = candidates.index(last_x)
+    i = 0
+    prob = [0]*len(candidates)
+    while True:
+        if start_index-i>=0:
+            prob[start_index-i]=len(candidates)-i
+        if start_index+i<len(candidates):
+            prob[start_index+i]=len(candidates)-i
+        if start_index-i<0 and start_index+i>=len(candidates):
+            break
+        i += 1
+
+    sum_prob = sum(prob)
+    output = [p/float(sum_prob) for p in prob]
+    return output
+
 def create_melody(chord_notes, chord_indexes, note_octave):
     melody = []
-    for bar in range(bars_num):
+    last_duration = 4
+    duration_choices = [2,4,8]
+    melody.append({ 'note': "r", 'duration': 1/4, 'sustain': 1/4}) #前四小节只有和弦
+    for bar in range(4, bars_num):
 
         bar_left = 1
         while bar_left>0:
             chord_idx_idx = int((1-bar_left)*4) # 在当前小节内，时间属于哪个四分音符，[0,1,2,3]
             chord_i = chord_indexes[bar*4+chord_idx_idx]
             notes_name = chord_notes[chord_i]
-            notes = notes_name2notes(notes_name, note_octave)
+            notes = notes_name2notes(notes_name, note_octave) #C4 E4 F4 C5 E5 F5
 
-            duration = random.sample([2,4,8,16], 1)[0]
-            sustain = random.sample([duration, duration//2], 1)[0]
-            note = random.sample(notes+['r'], 1)[0]
+            # duration = random.sample([2,4,8,16], 1)[0]
+
+            duration_prob = near_probability(duration_choices, last_x=last_duration)
+            duration = np.random.choice(duration_choices, p=duration_prob)
+            last_duration = duration
+            # sustain = random.sample([duration, duration//2], 1)[0]
+            sustain = duration
+            note_probability = [0.8/len(notes)]*len(notes)+[0.2]
+            # note = random.sample(notes+['r'], 1)[0]
+            note = np.random.choice(notes+['r'], p=note_probability)
 
             if bar_left-1/duration<0:
                 break
@@ -77,6 +126,8 @@ def create_melody(chord_notes, chord_indexes, note_octave):
             melody.append({'note':[note], 'duration': duration, 'sustain': sustain})
 
             bar_left -= 1/duration
+
+        melody.append({'note':['r'], 'duration': 1/bar_left, 'sustain': 1/bar_left})
 
     return melody
 
@@ -116,25 +167,7 @@ def create_arpeggio(chord_notes, chord_indexes, note_octave, arpeggios):
 
     return melody
 
-def create_chord_progression(chord_notes, note_octave, Arousal, Arousal_range):
-    chord_progression = []
-
-    chord_duration_idx = round(linear_map(Arousal, Arousal_range[0], Arousal_range[1], 0, 2)) #较低的arousal对应较长duration
-    chord_duration = [1,2,4][chord_duration_idx] #指数关系，可能值为1,2,4
-
-    chord_sums_num = bars_num*(chord_duration)
-    chord_indexes = [] # 每个四分音符上，所用和弦的序号
-    for chord_i in range(chord_sums_num):
-        chord_idx = chord_i%len(chord_notes)
-        notes_name = chord_notes[chord_idx]
-        notes = notes_name2notes(notes_name, octaves=[note_octave[0]-1])
-
-        chord_progression.append({ 'note': notes, 'duration': chord_duration, 'sustain': chord_duration})
-        chord_indexes += [chord_idx]*(4//chord_duration)
-
-    return chord_progression, chord_indexes
-
-def parse_notes2instrument(melody, instrument):
+def parse_notes2instrument(melody, instrument, velocity=100):
     time = 0
     for note_info in melody:
         duration = note_info['duration']
@@ -146,7 +179,7 @@ def parse_notes2instrument(melody, instrument):
             if note=='r':
                 continue
             note_number = pretty_midi.note_name_to_number(note)-12
-            note = pretty_midi.Note(velocity=100, pitch=note_number, start=time, end=end_time)
+            note = pretty_midi.Note(velocity=velocity, pitch=note_number, start=time, end=end_time)
             instrument.notes.append(note)
 
         time += 1/duration*time_per_duration
@@ -156,15 +189,17 @@ def parse_notes2instrument(melody, instrument):
 def notes2music(melody, chord_progression=None, output_name = 'output/output.mid'):
     music_output = pretty_midi.PrettyMIDI(initial_tempo=tempo)
     piano_program = pretty_midi.instrument_name_to_program('Electric Grand Piano')
-    piano = pretty_midi.Instrument(program=piano_program)
+    melody_instrument_name = random.choice(['Violin', 'Cello', 'Electric Grand Piano', 'Orchestral Harp', 'Trumpet'])
+    melody_instrument_program = pretty_midi.instrument_name_to_program(melody_instrument_name)
 
-    piano = parse_notes2instrument(melody, piano)
+    melody_instrument = pretty_midi.Instrument(program=melody_instrument_program)
+    piano = parse_notes2instrument(melody, melody_instrument, velocity=100)
     music_output.instruments.append(piano)
 
     if chord_progression:
-        piano_chord = pretty_midi.Instrument(program=piano_program)
-        piano_chord = parse_notes2instrument(chord_progression, piano_chord)
-        music_output.instruments.append(piano_chord)    
+        chord_instrument = pretty_midi.Instrument(program=piano_program)
+        chord_instrument = parse_notes2instrument(chord_progression, chord_instrument, velocity=100)
+        music_output.instruments.append(chord_instrument)    
     
     # Write out the MIDI data
     music_output.write(output_name)
@@ -180,8 +215,9 @@ def linear_map(x, in_min, in_max, out_min, out_max):
     return (x-in_min)/(in_max-in_min)*(out_max-out_min)+out_min
 
 def get_basic_setting(Valence, Arousal, Valence_range, Arousal_range):
-    octave = round(linear_map(Valence, Valence_range[0], Valence_range[1], 3, 6))
-    time_per_duration = linear_map(Arousal, Arousal_range[0], Arousal_range[1], 4, 2)
+    octave = round(linear_map(Valence, Valence_range[0], Valence_range[1], 4, 6))
+    # time_per_duration = linear_map(Arousal, Arousal_range[0], Arousal_range[1], 4, 2)
+    time_per_duration = 2
 
     note_octave = [octave, octave+1]
 
@@ -210,8 +246,8 @@ if __name__ == '__main__':
 
     # for i in range(Valence_range[0], Valence_range[1]+1):
     i=0
-    Valence = 0 # 情绪积极或消极
-    Arousal = 4 # 情绪强度
+    Valence = 4 # 情绪积极或消极
+    Arousal = Valence # 情绪强度
 
     # 基本的音乐参数
     progression, note_octave, arpeggios, time_per_duration = get_basic_setting(Valence, Arousal, Valence_range, Arousal_range)
@@ -223,8 +259,8 @@ if __name__ == '__main__':
     chord_progression, chord_indexes = create_chord_progression(chord_notes, note_octave, Arousal, Arousal_range) 
     
     # 旋律
-    # melody = create_melody(chord_notes, chord_indexes, note_octave)
-    melody = create_arpeggio(chord_notes, chord_indexes, note_octave, arpeggios)
+    melody = create_melody(chord_notes, chord_indexes, note_octave)
+    # melody = create_arpeggio(chord_notes, chord_indexes, note_octave, arpeggios)
 
     settings = {'progression':progression, 'note_octave':note_octave, 'arpeggios':arpeggios, 'time_per_duration':time_per_duration}
     notes2txt(chord_progression, settings=settings, output_name='output/output_%d_progression.txt'%(i))
