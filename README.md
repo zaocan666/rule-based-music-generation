@@ -35,3 +35,6 @@ melody由一连串音符组成，前后两个音符之间不重叠，音符的�
 ## 遇到的问题
 - 对矩阵进行laplace卷积时，最开始使用的是zero padding，后来发现这种方法会使全零矩阵的laplace_mean为零，但使全1矩阵的laplace_mean很小，违背初衷，两种矩阵都很平缓，laplace_mean应该都为0才对。于是改用same padding
 - melody中音符的duration随机生成，可能会出现某音符越出本小节到下一小节的情况，我们将这样的音符换为休止符。但最开始因为往了添加休止符，出现bug，后来才发现这个错误。
+
+## Reference
+https://github.com/epranka/soundcode
